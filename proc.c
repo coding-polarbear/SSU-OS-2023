@@ -11,6 +11,7 @@ struct
 {
   struct spinlock lock;
   struct proc proc[NPROC];
+  int count[NPROC];
 } ptable;
 
 static struct proc *initproc;
@@ -114,6 +115,7 @@ found:
   p->context = (struct context *)sp;
   memset(p->context, 0, sizeof *p->context);
   p->context->eip = (uint)forkret;
+  p->priority = 5;
 
   return p;
 }
@@ -151,6 +153,7 @@ void userinit(void)
   acquire(&ptable.lock);
 
   p->state = RUNNABLE;
+  ptable.count[p->pid] = 0;
 
   release(&ptable.lock);
 }
@@ -217,9 +220,12 @@ int fork(void)
 
   pid = np->pid;
 
+  np->priority = curproc->priority;
+
   acquire(&ptable.lock);
 
   np->state = RUNNABLE;
+  ptable.count[pid] = 0;
 
   release(&ptable.lock);
 
@@ -348,19 +354,37 @@ void scheduler(void)
       if (p->state != RUNNABLE)
         continue;
 
-      // Switch to chosen process.  It is the process's job
-      // to release ptable.lock and then reacquire it
-      // before jumping back to us.
-      c->proc = p;
-      switchuvm(p);
-      p->state = RUNNING;
+      struct proc *target_process = 0, *temp_process = 0;
+      target_process = p;
 
-      swtch(&(c->scheduler), p->context);
-      switchkvm();
+      for (temp_process = ptable.proc; temp_process < &ptable.proc[NPROC]; temp_process++)
+      {
+        if (temp_process->state == RUNNABLE && (target_process->priority * 100 + ptable.count[target_process->pid]) >
+            (temp_process->priority * 100 + ptable.count[temp_process->pid]))
+          target_process = temp_process;
+      }
 
-      // Process is done running for now.
-      // It should have changed its p->state before coming back.
-      c->proc = 0;
+      if (target_process != 0)
+      {
+        p = target_process;
+
+        // Switch to chosen process.  It is the process's job
+        // to release ptable.lock and then reacquire it
+        // before jumping back to us.
+        c->proc = p;
+        switchuvm(p);
+        p->state = RUNNING;
+
+        // update ptable.count
+        ptable.count[p->pid]++;
+
+        swtch(&(c->scheduler), p->context);
+        switchkvm();
+
+        // Process is done running for now.
+        // It should have changed its p->state before coming back.
+        c->proc = 0;
+      }
     }
     release(&ptable.lock);
   }
@@ -550,7 +574,7 @@ int forknexec(const char *path, const char **args)
   struct proc *np;
   struct proc *curproc = myproc();
 
-  if(path == 0 || args == 0) // path나 args가 null인 경우 -1 리턴
+  if (path == 0 || args == 0) // path나 args가 null인 경우 -1 리턴
   {
     return -1;
   }
@@ -584,7 +608,7 @@ int forknexec(const char *path, const char **args)
   safestrcpy(np->name, curproc->name, sizeof(curproc->name));
 
   pid = np->pid;
-  
+
   acquire(&ptable.lock);
   np->state = RUNNABLE;
   release(&ptable.lock);
@@ -596,28 +620,73 @@ int forknexec(const char *path, const char **args)
   return pid;
 }
 
-int execute_exec(void) {
+int execute_exec(void)
+{
   release(&ptable.lock);
   char *path, *argv[MAXARG];
   int i;
   uint uargv, uarg;
 
-  if(argstr(0, &path) < 0 || argint(1, (int*)&uargv) < 0){
+  if (argstr(0, &path) < 0 || argint(1, (int *)&uargv) < 0)
+  {
     return -1;
   }
   memset(argv, 0, sizeof(argv));
-  for(i=0;; i++){
-    if(i >= NELEM(argv))
+  for (i = 0;; i++)
+  {
+    if (i >= NELEM(argv))
       return -1;
-    if(fetchint(uargv+4*i, (int*)&uarg) < 0)
+    if (fetchint(uargv + 4 * i, (int *)&uarg) < 0)
       return -1;
-    if(uarg == 0){
+    if (uarg == 0)
+    {
       argv[i] = 0;
       break;
     }
-    if(fetchstr(uarg, &argv[i]) < 0)
+    if (fetchstr(uarg, &argv[i]) < 0)
       return -1;
   }
 
   return exec(path, argv);
+}
+
+int set_proc_priority(int pid, int priority)
+{
+  if (priority < 1 || priority > 10)
+  {
+    return -1;
+  }
+
+  struct proc *temp_process;
+  acquire(&ptable.lock);
+
+  for (temp_process = ptable.proc; temp_process < &ptable.proc[NPROC]; temp_process++)
+  {
+    if (temp_process->pid == pid)
+    {
+      temp_process->priority = priority;
+      release(&ptable.lock);
+      return 0;
+    }
+  }
+  release(&ptable.lock);
+  return -1;
+}
+
+int get_proc_priority(int pid)
+{
+  struct proc *temp_process;
+
+  acquire(&ptable.lock);
+
+  for (temp_process = ptable.proc; temp_process < &ptable.proc[NPROC]; temp_process++)
+  {
+    if (temp_process->pid == pid)
+    {
+      release(&ptable.lock);
+      return temp_process->priority;
+    }
+  }
+  release(&ptable.lock);
+  return -1;
 }
