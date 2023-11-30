@@ -26,6 +26,7 @@ int uptime(void);
 int forknexec(const char *path, const char **args);
 int get_proc_priority(int pid);
 void set_proc_priority(int pid, int priority);
+uint get_num_freepages(void);
 
 // ulib.c
 int stat(const char*, struct stat*);
